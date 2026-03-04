@@ -5,6 +5,11 @@ from pathlib import Path
 class Settings(BaseSettings):
     POSTGRES_URL: str
     STORAGE_PATH: str = "./data/storage"
+    ALLOWED_ORIGINS: str = "http://localhost:5173"
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]
 
     model_config = SettingsConfigDict(
         env_file=".env",
