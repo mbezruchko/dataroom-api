@@ -3,8 +3,8 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 
-class FileRename(BaseModel):
-    name: str
+class FileUpdate(BaseModel):
+    name: Optional[str] = None
 
 
 class FileFavoriteToggle(BaseModel):

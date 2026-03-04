@@ -1,28 +1,34 @@
 import os
 import uuid
-import aiofiles
-import hashlib
-from typing import Optional
-
-from fastapi import APIRouter, HTTPException, status, UploadFile, File as FastAPIFile, Form
-from fastapi.responses import FileResponse as FastAPIFileResponse
+import shutil
+from typing import List, Optional
+from fastapi import APIRouter, UploadFile, File as FastAPIFile, HTTPException, status, Form
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.api.dependencies import SessionDep
-from app.core.config import settings
-from app.models.folder import Folder
 from app.models.file import File
-from app.schemas.file import FileResponse, FileRename, FileFavoriteToggle
-from typing import List
+from app.models.folder import Folder
+from app.schemas.file import FileResponse, FileUpdate, FileFavoriteToggle
+from app.core.config import settings
 
 router = APIRouter(prefix="/files", tags=["files"])
 
-
-
-
 @router.get("", response_model=List[FileResponse])
-async def list_files(session: SessionDep, folder_id: Optional[int] = None):
+async def list_files(
+    session: SessionDep, 
+    folder_id: Optional[int] = None, 
+    workspace_guid: Optional[str] = None
+):
     query = select(File).where(File.is_deleted == False)
+    
+    if workspace_guid:
+        from app.models.workspace import Workspace
+        res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
+        workspace = res.scalar_one_or_none()
+        if workspace:
+            query = query.where(File.workspace_id == workspace.id)
+
     if folder_id is None:
         query = query.where(File.folder_id == None)
     else:
@@ -36,184 +42,126 @@ async def upload_files(
     session: SessionDep,
     files: List[UploadFile] = FastAPIFile(...),
     folder_guid: Optional[str] = Form(None),
+    workspace_guid: Optional[str] = Form(None),
 ):
     from app.models.workspace import Workspace
-    # Derive Workspace
-    res = await session.execute(select(Workspace).limit(1))
-    workspace = res.scalar_one_or_none()
-    if not workspace:
-        workspace = Workspace(name="Default Workspace")
-        session.add(workspace)
-        await session.flush()
-    workspace_id = workspace.id
-
-    folder_id = None
-    if folder_guid is not None:
-        folder_result = await session.execute(select(Folder).where(Folder.guid == folder_guid))
-        folder = folder_result.scalar_one_or_none()
-        if not folder:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Target folder not found",
-            )
-        folder_id = folder.id
-        workspace_id = folder.workspace_id # Override with folder's workspace if available
     
+    # Resolve Workspace
+    if workspace_guid:
+        res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
+        workspace = res.scalar_one_or_none()
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        workspace_id = workspace.id
+    else:
+        # Fallback to default
+        res = await session.execute(select(Workspace).limit(1))
+        workspace = res.scalar_one_or_none()
+        if not workspace:
+            workspace = Workspace(name="Default Workspace")
+            session.add(workspace)
+            await session.flush()
+        workspace_id = workspace.id
+
+    # Resolve Folder
+    folder_id = None
+    if folder_guid:
+        res = await session.execute(select(Folder).where(Folder.guid == folder_guid))
+        folder = res.scalar_one_or_none()
+        if not folder:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        folder_id = folder.id
+
     uploaded_files = []
+    
+    # Ensure storage path exists
+    os.makedirs(settings.STORAGE_PATH, exist_ok=True)
 
     for file in files:
-        if not file.filename.lower().endswith(".pdf"):
-            continue
-        storage_filename = f"{uuid.uuid4()}.pdf"
+        file_guid = str(uuid.uuid4())
+        file_extension = os.path.splitext(file.filename)[1]
+        storage_filename = f"{file_guid}{file_extension}"
         storage_path = os.path.join(settings.STORAGE_PATH, storage_filename)
 
-        size = 0
-        h = hashlib.sha256()
-        try:
-            async with aiofiles.open(storage_path, "wb") as buffer:
-                while content := await file.read(1024 * 1024):
-                    size += len(content)
-                    h.update(content)
-                    await buffer.write(content)
-        except Exception as e:
-            if os.path.exists(storage_path):
-                os.remove(storage_path)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to save file {file.filename}: {str(e)}",
-            )
-        
-        content_hash = h.hexdigest()
+        with open(storage_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-        # Deduplication check
-        existing_file_query = select(File).where(File.content_hash == content_hash).limit(1)
-        existing_file_result = await session.execute(existing_file_query)
-        existing_file = existing_file_result.scalar_one_or_none()
-
-        if existing_file and os.path.exists(existing_file.storage_path):
-            # Duplicate found physically on disk, reuse path and delete temp
-            os.remove(storage_path)
-            storage_path = existing_file.storage_path
-        original_name = file.filename
-        name_base, extension = os.path.splitext(original_name)
-        new_name = original_name
-        counter = 1
-        while True:
-            collision_query = select(File).where(
-                File.folder_id == folder_id,
-                File.name == new_name,
-                File.is_deleted == False
-            )
-            collision_result = await session.execute(collision_query)
-            if not collision_result.scalar_one_or_none():
-                break
-            new_name = f"{name_base} ({counter}){extension}"
-            counter += 1
         new_file = File(
-            name=new_name,
+            guid=file_guid,
+            name=file.filename,
+            size=os.path.getsize(storage_path),
+            mime_type=file.content_type,
             storage_path=storage_path,
-            size=size,
             folder_id=folder_id,
-            workspace_id=workspace_id,
-            content_hash=content_hash,
-            is_deleted=False,
+            workspace_id=workspace_id
         )
         session.add(new_file)
         uploaded_files.append(new_file)
-    if not uploaded_files:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No valid PDF files provided.",
-        )
 
     await session.commit()
     for f in uploaded_files:
         await session.refresh(f)
+        
     return uploaded_files
 
 @router.get("/{guid}/download")
 async def download_file(guid: str, session: SessionDep):
-
     result = await session.execute(select(File).where(File.guid == guid))
-    db_file = result.scalar_one_or_none()
-    if not db_file or db_file.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found or has been deleted.",
-        )
-    if not os.path.exists(db_file.storage_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Physical file not found on disk.",
-        )
+    file = result.scalar_one_or_none()
+    
+    if not file or not os.path.exists(file.storage_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    from fastapi.responses import FileResponse as FastAPIFileResponse
     return FastAPIFileResponse(
-        path=db_file.storage_path,
-        filename=db_file.name,
-        media_type="application/pdf"
+        path=file.storage_path,
+        filename=file.name,
+        media_type=file.mime_type
     )
 
 @router.patch("/{guid}", response_model=FileResponse)
-async def rename_file(guid: str, file_in: FileRename, session: SessionDep):
-
-    if not file_in.name.lower().endswith(".pdf"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Filename must end with .pdf",
-        )
+async def update_file(guid: str, file_in: FileUpdate, session: SessionDep):
     result = await session.execute(select(File).where(File.guid == guid))
-    db_file = result.scalar_one_or_none()
-    if not db_file or db_file.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found.",
-        )
-    db_file.name = file_in.name
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    if file_in.name is not None:
+        file.name = file_in.name
     await session.commit()
-    await session.refresh(db_file)
-    return db_file
+    await session.refresh(file)
+    return file
+
+@router.patch("/{guid}/favorite", response_model=FileResponse)
+async def toggle_favorite(guid: str, favorite_in: FileFavoriteToggle, session: SessionDep):
+    result = await session.execute(select(File).where(File.guid == guid))
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    file.is_favorite = favorite_in.is_favorite
+    await session.commit()
+    await session.refresh(file)
+    return file
 
 @router.delete("/{guid}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_file(guid: str, session: SessionDep):
-
     result = await session.execute(select(File).where(File.guid == guid))
-    db_file = result.scalar_one_or_none()
-    if not db_file or db_file.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found.",
-        )
-    db_file.is_deleted = True
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file.is_deleted = True
     await session.commit()
     return
 
-@router.patch("/{guid}/favorite", response_model=FileResponse)
-async def toggle_favorite_file(
-    guid: str, favorite_in: FileFavoriteToggle, session: SessionDep
-):
-
-    result = await session.execute(select(File).where(File.guid == guid))
-    db_file = result.scalar_one_or_none()
-    if not db_file or db_file.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found or deleted.",
-        )
-    db_file.is_favorite = favorite_in.is_favorite
-    await session.commit()
-    await session.refresh(db_file)
-    return db_file
-    
 @router.post("/{guid}/restore", response_model=FileResponse)
 async def restore_file(guid: str, session: SessionDep):
-
     result = await session.execute(select(File).where(File.guid == guid))
-    db_file = result.scalar_one_or_none()
-    if not db_file or not db_file.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found or not in trash.",
-        )
-    db_file.is_deleted = False
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file.is_deleted = False
     await session.commit()
-    await session.refresh(db_file)
-    return db_file
+    await session.refresh(file)
+    return file

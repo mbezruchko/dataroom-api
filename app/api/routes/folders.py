@@ -61,15 +61,25 @@ async def create_folder(folder_in: FolderCreate, session: SessionDep):
     return new_folder
 
 @router.get("", response_model=List[FolderResponseMinimal])
-async def list_root_folders(session: SessionDep):
-    result = await session.execute(
+async def list_root_folders(session: SessionDep, workspace_guid: Optional[str] = None):
+    # Ensure nested files for count are also filtered
+    query = (
         select(Folder)
-        .options(selectinload(Folder.files))
+        .options(selectinload(Folder.files.and_(File.is_deleted == False)))
         .where(Folder.parent_id == None)
     )
+    
+    if workspace_guid:
+        from app.models.workspace import Workspace
+        res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
+        workspace = res.scalar_one_or_none()
+        if workspace:
+            query = query.where(Folder.workspace_id == workspace.id)
+
+    result = await session.execute(query)
     folders = result.scalars().all()
     for f in folders:
-        f.files_count = len([file for file in f.files if not file.is_deleted])
+        f.files_count = len(f.files)
     return folders
 
 @router.get("/{guid}", response_model=FolderResponseDetailed)
@@ -77,7 +87,7 @@ async def get_folder(guid: str, session: SessionDep):
     query = (
         select(Folder)
         .options(
-            selectinload(Folder.subfolders).selectinload(Folder.files),
+            selectinload(Folder.subfolders).selectinload(Folder.files.and_(File.is_deleted == False)),
             selectinload(Folder.files.and_(File.is_deleted == False)),
         )
         .where(Folder.guid == guid)
@@ -91,7 +101,7 @@ async def get_folder(guid: str, session: SessionDep):
         )
 
     for sub in folder.subfolders:
-        sub.files_count = len([file for file in sub.files if not file.is_deleted])
+        sub.files_count = len(sub.files)
 
     return folder
 
@@ -145,20 +155,6 @@ async def toggle_favorite(guid: str, favorite_in: FolderFavoriteToggle, session:
     await session.refresh(folder)
     return folder
 
-async def _soft_delete_recursively(folder_id: int, session: SessionDep):
-    await session.execute(
-        update(File)
-        .where(File.folder_id == folder_id, File.is_deleted == False)
-        .values(is_deleted=True)
-    )
-    result = await session.execute(
-        select(Folder).where(Folder.parent_id == folder_id)
-    )
-    subfolders = result.scalars().all()
-    for subfolder in subfolders:
-        await _soft_delete_recursively(subfolder.id, session)
-    pass
-
 @router.delete("/{guid}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_folder(guid: str, session: SessionDep):
     result = await session.execute(select(Folder).where(Folder.guid == guid))
@@ -170,7 +166,8 @@ async def delete_folder(guid: str, session: SessionDep):
             detail="Folder not found",
         )
 
-    async def process_folder(current_id: int):
+    async def process_folder_files(current_id: int):
+        # We mark files as deleted and move them to "no folder" (root trash)
         await session.execute(
             update(File)
             .where(File.folder_id == current_id)
@@ -179,8 +176,10 @@ async def delete_folder(guid: str, session: SessionDep):
         res = await session.execute(select(Folder).where(Folder.parent_id == current_id))
         children = res.scalars().all()
         for child in children:
-            await process_folder(child.id)
-    await process_folder(folder.id)
+            await process_folder_files(child.id)
+            
+    await process_folder_files(folder.id)
+    # Folders are still hard-deleted as requested (they don't have is_deleted)
     await session.delete(folder)
     await session.commit()
     return
