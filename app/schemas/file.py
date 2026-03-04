@@ -13,11 +13,14 @@ class FileFavoriteToggle(BaseModel):
 
 class FileResponse(BaseModel):
     id: int
+    guid: str
     name: str
     size: Optional[int]
     folder_id: Optional[int]
+    workspace_id: int
     is_deleted: bool
     is_favorite: bool
+    content_hash: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

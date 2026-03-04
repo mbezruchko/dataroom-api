@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 class FileResponseMinimal(BaseModel):
     id: int
+    guid: str
     name: str
     size: Optional[int]
     is_deleted: bool
@@ -20,7 +21,8 @@ class FolderBase(BaseModel):
 
 
 class FolderCreate(FolderBase):
-    parent_id: Optional[int] = None
+    workspace_guid: Optional[str] = None
+    parent_guid: Optional[str] = None
 
 
 class FolderRename(FolderBase):
@@ -33,6 +35,7 @@ class FolderFavoriteToggle(BaseModel):
 
 class FolderBreadcrumb(BaseModel):
     id: int
+    guid: str
     name: str
 
     model_config = ConfigDict(from_attributes=True)
@@ -40,6 +43,8 @@ class FolderBreadcrumb(BaseModel):
 
 class FolderResponseMinimal(FolderBase):
     id: int
+    guid: str
+    workspace_id: int
     parent_id: Optional[int]
     is_favorite: bool
     files_count: int = 0

@@ -9,9 +9,9 @@ revision: str = '2d8c6a1f59e8'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+
+
 def upgrade() -> None:
-
-
     op.create_table('folders',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(length=255), nullable=False),
@@ -38,8 +38,9 @@ def upgrade() -> None:
     op.create_index(op.f('ix_files_folder_id'), 'files', ['folder_id'], unique=False)
     op.create_index(op.f('ix_files_id'), 'files', ['id'], unique=False)
     op.create_index(op.f('ix_files_is_deleted'), 'files', ['is_deleted'], unique=False)
-def downgrade() -> None:
 
+
+def downgrade() -> None:
     op.drop_index(op.f('ix_files_is_deleted'), table_name='files')
     op.drop_index(op.f('ix_files_id'), table_name='files')
     op.drop_index(op.f('ix_files_folder_id'), table_name='files')
