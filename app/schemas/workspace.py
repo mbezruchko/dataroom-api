@@ -9,14 +9,14 @@ class WorkspaceBase(BaseModel):
 class WorkspaceCreate(WorkspaceBase):
     session_guid: Optional[str] = None
 
-class WorkspaceUpdate(WorkspaceBase):
+class WorkspaceUpdate(BaseModel):
     name: Optional[str] = None
+    description: Optional[str] = None
 
 class WorkspaceResponse(WorkspaceBase):
     id: int
     guid: str
     session_guid: Optional[str] = None
-    is_deleted: bool
     created_at: datetime
     updated_at: datetime
 

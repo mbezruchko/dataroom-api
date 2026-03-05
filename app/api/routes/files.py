@@ -53,7 +53,7 @@ async def upload_files(
             raise HTTPException(status_code=404, detail="Workspace not found")
         workspace_id = workspace.id
     else:
-        query = select(Workspace).where(Workspace.is_deleted == False)
+        query = select(Workspace)
         if session_guid:
             query = query.where(Workspace.session_guid == session_guid)
         
