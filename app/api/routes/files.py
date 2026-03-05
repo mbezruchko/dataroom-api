@@ -15,6 +15,38 @@ from fastapi.responses import FileResponse as FastAPIFileResponse
 
 router = APIRouter(prefix="/files", tags=["files"])
 
+async def _get_unique_file_name(
+    session,
+    name: str,
+    folder_id: int | None,
+    workspace_id: int,
+    exclude_id: int | None = None,
+) -> str:
+    # Separate name and extension
+    base_name, extension = os.path.splitext(name)
+    
+    q = select(File.name).where(
+        File.name.ilike(f"{base_name}%"),
+        File.folder_id == folder_id,
+        File.workspace_id == workspace_id,
+        File.is_deleted == False
+    )
+    if exclude_id is not None:
+        q = q.where(File.id != exclude_id)
+
+    existing = {n.lower() for n in await session.scalars(q)}
+
+    if name.lower() not in existing:
+        return name
+
+    counter = 1
+    while True:
+        # candidate name with counter before extension
+        candidate = f"{base_name} ({counter}){extension}"
+        if candidate.lower() not in existing:
+            return candidate
+        counter += 1
+
 @router.get("", response_model=List[FileResponse])
 async def list_files(
     session: SessionDep, 
@@ -86,6 +118,14 @@ async def upload_files(
     os.makedirs(settings.STORAGE_PATH, exist_ok=True)
 
     for file in files:
+        # Get unique name if already exists
+        unique_name = await _get_unique_file_name(
+            session, 
+            file.filename, 
+            folder_id, 
+            workspace_id
+        )
+        
         file_guid = str(uuid.uuid4())
         file_extension = os.path.splitext(file.filename)[1]
         storage_filename = f"{file_guid}{file_extension}"
@@ -96,7 +136,7 @@ async def upload_files(
 
         new_file = File(
             guid=file_guid,
-            name=file.filename,
+            name=unique_name,
             size=os.path.getsize(storage_path),
             storage_path=storage_path,
             folder_id=folder_id,
@@ -156,7 +196,13 @@ async def update_file(
     await check_workspace_access(file.workspace, session_guid)
 
     if file_in.name is not None:
-        file.name = file_in.name
+        file.name = await _get_unique_file_name(
+            session,
+            file_in.name,
+            file.folder_id,
+            file.workspace_id,
+            exclude_id=file.id
+        )
     await session.commit()
     await session.refresh(file)
     return file
