@@ -16,6 +16,35 @@ from app.schemas.folder import (
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 
+
+async def _get_unique_folder_name(
+    session,
+    name: str,
+    parent_id: int | None,
+    workspace_id: int,
+    exclude_id: int | None = None,
+) -> str:
+    """Return `name`, or `name (N)` if a case-insensitively matching sibling already exists."""
+    q = select(Folder.name).where(
+        Folder.name.ilike(f"{name}%"),
+        Folder.parent_id == parent_id,
+        Folder.workspace_id == workspace_id,
+    )
+    if exclude_id is not None:
+        q = q.where(Folder.id != exclude_id)
+
+    existing = {n.lower() for n in await session.scalars(q)}
+
+    if name.lower() not in existing:
+        return name
+
+    counter = 1
+    while True:
+        candidate = f"{name} ({counter})"
+        if candidate.lower() not in existing:
+            return candidate
+        counter += 1
+
 @router.post("", response_model=FolderResponseMinimal, status_code=status.HTTP_201_CREATED)
 async def create_folder(
     folder_in: FolderCreate, 
@@ -61,8 +90,10 @@ async def create_folder(
             )
         parent_id = parent_folder.id
 
+    name = await _get_unique_folder_name(session, folder_in.name, parent_id, workspace_id)
+
     new_folder = Folder(
-        name=folder_in.name,
+        name=name,
         parent_id=parent_id,
         workspace_id=workspace_id
     )
@@ -153,7 +184,10 @@ async def rename_folder(guid: str, folder_in: FolderRename, session: SessionDep)
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Folder not found",
         )
-    folder.name = folder_in.name
+    
+    folder.name = await _get_unique_folder_name(
+        session, folder_in.name, folder.parent_id, folder.workspace_id, exclude_id=folder.id
+    )
     await session.commit()
     await session.refresh(folder)
     return folder
