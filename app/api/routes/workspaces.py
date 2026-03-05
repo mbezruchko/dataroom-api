@@ -1,8 +1,8 @@
 import os
-from typing import List, Optional
-from fastapi import APIRouter, status, Header, HTTPException
+from typing import List
+from fastapi import APIRouter, status
 from sqlalchemy import select
-from app.api.dependencies import SessionDep
+from app.api.dependencies import SessionDep, SessionGuidDep, check_workspace_access
 from app.models.file import File
 from app.models.workspace import Workspace
 from app.schemas.workspace import WorkspaceResponse, WorkspaceCreate, WorkspaceUpdate
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 @router.get("", response_model=List[WorkspaceResponse])
 async def list_workspaces(
     session: SessionDep, 
-    session_guid: Optional[str] = Header(None, alias="session-guid")
+    session_guid: SessionGuidDep
 ):
     query = select(Workspace)
     if session_guid:
@@ -37,7 +37,7 @@ async def list_workspaces(
 async def create_workspace(
     workspace_in: WorkspaceCreate, 
     session: SessionDep,
-    session_guid: Optional[str] = Header(None, alias="session-guid")
+    session_guid: SessionGuidDep
 ):
     final_session_guid = workspace_in.session_guid or session_guid
     
@@ -52,23 +52,32 @@ async def create_workspace(
     return new_workspace
 
 @router.get("/{guid}", response_model=WorkspaceResponse)
-async def get_workspace(guid: str, session: SessionDep):
-    result = await session.execute(select(Workspace).where(Workspace.guid == guid))
-    workspace = result.scalar_one_or_none()
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    return workspace
-
-@router.patch("/{guid}", response_model=WorkspaceResponse)
-async def update_workspace(
-    guid: str, 
-    workspace_in: WorkspaceUpdate, 
-    session: SessionDep
+async def get_workspace(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
 ):
     result = await session.execute(select(Workspace).where(Workspace.guid == guid))
     workspace = result.scalar_one_or_none()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+        
+    await check_workspace_access(workspace, session_guid)
+    return workspace
+
+@router.patch("/{guid}", response_model=WorkspaceResponse)
+async def update_workspace(
+    guid: str,
+    workspace_in: WorkspaceUpdate, 
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(select(Workspace).where(Workspace.guid == guid))
+    workspace = result.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+        
+    await check_workspace_access(workspace, session_guid)
     
     if workspace_in.name is not None:
         workspace.name = workspace_in.name
@@ -80,11 +89,17 @@ async def update_workspace(
     return workspace
 
 @router.delete("/{guid}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_workspace(guid: str, session: SessionDep):
+async def delete_workspace(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
     result = await session.execute(select(Workspace).where(Workspace.guid == guid))
     workspace = result.scalar_one_or_none()
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+        
+    await check_workspace_access(workspace, session_guid)
     
     file_paths_res = await session.execute(select(File.storage_path).where(File.workspace_id == workspace.id))
     file_paths = file_paths_res.scalars().all()

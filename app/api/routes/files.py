@@ -1,12 +1,11 @@
 import os
 import uuid
 import shutil
-from typing import List, Optional
-from fastapi import APIRouter, UploadFile, File as FastAPIFile, HTTPException, status, Form, Header
+from typing import List
+from fastapi import APIRouter, UploadFile, File as FastAPIFile, HTTPException, status, Form
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
-
-from app.api.dependencies import SessionDep
+from app.api.dependencies import SessionDep, SessionGuidDep, check_workspace_access
 from app.models.file import File
 from app.models.folder import Folder
 from app.schemas.file import FileResponse, FileUpdate, FileFavoriteToggle
@@ -19,16 +18,20 @@ router = APIRouter(prefix="/files", tags=["files"])
 @router.get("", response_model=List[FileResponse])
 async def list_files(
     session: SessionDep, 
-    folder_id: Optional[int] = None, 
-    workspace_guid: Optional[str] = None
+    session_guid: SessionGuidDep,
+    folder_id: int | None = None, 
+    workspace_guid: str | None = None
 ):
     query = select(File).where(File.is_deleted == False)
     
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
-        if workspace:
-            query = query.where(File.workspace_id == workspace.id)
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        
+        await check_workspace_access(workspace, session_guid)
+        query = query.where(File.workspace_id == workspace.id)
 
     if folder_id is None:
         query = query.where(File.folder_id == None)
@@ -41,16 +44,17 @@ async def list_files(
 @router.post("/upload", response_model=List[FileResponse], status_code=status.HTTP_201_CREATED)
 async def upload_files(
     session: SessionDep,
+    session_guid: SessionGuidDep,
     files: List[UploadFile] = FastAPIFile(...),
-    folder_guid: Optional[str] = Form(None),
-    workspace_guid: Optional[str] = Form(None),
-    session_guid: Optional[str] = Header(None, alias="session-guid")
+    folder_guid: str | None = Form(None),
+    workspace_guid: str | None = Form(None)
 ):  
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
         if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
+        await check_workspace_access(workspace, session_guid)
         workspace_id = workspace.id
     else:
         query = select(Workspace)
@@ -108,12 +112,24 @@ async def upload_files(
     return uploaded_files
 
 @router.get("/{guid}/download")
-async def download_file(guid: str, session: SessionDep):
-    result = await session.execute(select(File).where(File.guid == guid))
+async def download_file(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(File)
+        .options(selectinload(File.workspace))
+        .where(File.guid == guid)
+    )
     file = result.scalar_one_or_none()
-    
-    if not file or not os.path.exists(file.storage_path):
+    if not file:
         raise HTTPException(status_code=404, detail="File not found")
+    
+    await check_workspace_access(file.workspace, session_guid)
+
+    if not os.path.exists(file.storage_path):
+        raise HTTPException(status_code=404, detail="Physical file not found")
     
     return FastAPIFileResponse(
         path=file.storage_path,
@@ -122,12 +138,23 @@ async def download_file(guid: str, session: SessionDep):
     )
 
 @router.patch("/{guid}", response_model=FileResponse)
-async def update_file(guid: str, file_in: FileUpdate, session: SessionDep):
-    result = await session.execute(select(File).where(File.guid == guid))
+async def update_file(
+    guid: str,
+    file_in: FileUpdate, 
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(File)
+        .options(selectinload(File.workspace))
+        .where(File.guid == guid)
+    )
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     
+    await check_workspace_access(file.workspace, session_guid)
+
     if file_in.name is not None:
         file.name = file_in.name
     await session.commit()
@@ -135,33 +162,65 @@ async def update_file(guid: str, file_in: FileUpdate, session: SessionDep):
     return file
 
 @router.patch("/{guid}/favorite", response_model=FileResponse)
-async def toggle_favorite(guid: str, favorite_in: FileFavoriteToggle, session: SessionDep):
-    result = await session.execute(select(File).where(File.guid == guid))
+async def toggle_favorite(
+    guid: str,
+    favorite_in: FileFavoriteToggle, 
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(File)
+        .options(selectinload(File.workspace))
+        .where(File.guid == guid)
+    )
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
+    
+    await check_workspace_access(file.workspace, session_guid)
+
     file.is_favorite = favorite_in.is_favorite
     await session.commit()
     await session.refresh(file)
     return file
 
 @router.delete("/{guid}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_file(guid: str, session: SessionDep):
-    result = await session.execute(select(File).where(File.guid == guid))
+async def delete_file(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(File)
+        .options(selectinload(File.workspace))
+        .where(File.guid == guid)
+    )
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     
+    await check_workspace_access(file.workspace, session_guid)
+
     file.is_deleted = True
     await session.commit()
     return
 
 @router.delete("/{guid}/permanent", status_code=status.HTTP_204_NO_CONTENT)
-async def permanent_delete_file(guid: str, session: SessionDep):
-    result = await session.execute(select(File).where(File.guid == guid))
+async def permanent_delete_file(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(File)
+        .options(selectinload(File.workspace))
+        .where(File.guid == guid)
+    )
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
+    
+    await check_workspace_access(file.workspace, session_guid)
 
     storage_path = file.storage_path
     await session.delete(file)
@@ -172,18 +231,25 @@ async def permanent_delete_file(guid: str, session: SessionDep):
             os.remove(storage_path)
         except OSError as e:
             print(f"Error deleting physical file {storage_path}: {e}")
-    else:
-        print(f"Physical file not found at {storage_path}, but DB entry was deleted.")
-
     return
 
 @router.post("/{guid}/restore", response_model=FileResponse)
-async def restore_file(guid: str, session: SessionDep):
-    result = await session.execute(select(File).where(File.guid == guid))
+async def restore_file(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(File)
+        .options(selectinload(File.workspace))
+        .where(File.guid == guid)
+    )
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
     
+    await check_workspace_access(file.workspace, session_guid)
+
     file.is_deleted = False
     await session.commit()
     await session.refresh(file)

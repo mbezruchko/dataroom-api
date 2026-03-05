@@ -1,8 +1,8 @@
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, status, Header
+from typing import List
+from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
-from app.api.dependencies import SessionDep
+from app.api.dependencies import SessionDep, SessionGuidDep, check_workspace_access
 from app.models.folder import Folder
 from app.models.file import File
 from app.models.workspace import Workspace
@@ -25,7 +25,6 @@ async def _get_unique_folder_name(
     workspace_id: int,
     exclude_id: int | None = None,
 ) -> str:
-    """Return `name`, or `name (N)` if a case-insensitively matching sibling already exists."""
     q = select(Folder.name).where(
         Folder.name.ilike(f"{name}%"),
         Folder.parent_id == parent_id,
@@ -50,13 +49,14 @@ async def _get_unique_folder_name(
 async def create_folder(
     folder_in: FolderCreate, 
     session: SessionDep,
-    session_guid: Optional[str] = Header(None, alias="session-guid")
+    session_guid: SessionGuidDep
 ):
     if folder_in.workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == folder_in.workspace_guid))
         workspace = res.scalar_one_or_none()
         if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
+        await check_workspace_access(workspace, session_guid)
         workspace_id = workspace.id
     else:
         query = select(Workspace)
@@ -103,8 +103,8 @@ async def create_folder(
 @router.get("", response_model=List[FolderResponseMinimal])
 async def list_root_folders(
     session: SessionDep, 
-    workspace_guid: Optional[str] = None,
-    session_guid: Optional[str] = Header(None, alias="session-guid")
+    workspace_guid: str | None = None,
+    session_guid: SessionGuidDep = None
 ):
     query = (
         select(Folder)
@@ -115,8 +115,10 @@ async def list_root_folders(
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
-        if workspace:
-            query = query.where(Folder.workspace_id == workspace.id)
+        if not workspace:
+             raise HTTPException(status_code=404, detail="Workspace not found")
+        await check_workspace_access(workspace, session_guid)
+        query = query.where(Folder.workspace_id == workspace.id)
     elif session_guid:
         query = query.join(Workspace).where(Workspace.session_guid == session_guid)
 
@@ -127,10 +129,15 @@ async def list_root_folders(
     return folders
 
 @router.get("/{guid}", response_model=FolderResponseDetailed)
-async def get_folder(guid: str, session: SessionDep):
+async def get_folder(
+    guid: str, 
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
     query = (
         select(Folder)
         .options(
+            selectinload(Folder.workspace),
             selectinload(Folder.subfolders).selectinload(Folder.files.and_(File.is_deleted == False)),
             selectinload(Folder.files.and_(File.is_deleted == False)),
         )
@@ -139,10 +146,9 @@ async def get_folder(guid: str, session: SessionDep):
     result = await session.execute(query)
     folder = result.scalar_one_or_none()
     if not folder:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Folder not found",
-        )
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    await check_workspace_access(folder.workspace, session_guid)
 
     for sub in folder.subfolders:
         sub.files_count = len(sub.files)
@@ -150,16 +156,24 @@ async def get_folder(guid: str, session: SessionDep):
     return folder
 
 @router.get("/{guid}/path", response_model=List[FolderBreadcrumb])
-async def get_folder_path(guid: str, session: SessionDep):
-    result = await session.execute(select(Folder).where(Folder.guid == guid))
-    current_folder = result.scalar_one_or_none()
+async def get_folder_path(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(Folder)
+        .options(selectinload(Folder.workspace))
+        .where(Folder.guid == guid)
+    )
+    folder = result.scalar_one_or_none()
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    await check_workspace_access(folder.workspace, session_guid)
 
-    if not current_folder:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Folder not found",
-        )
     path = []
+    current_folder = folder
     while current_folder is not None:
         path.append(current_folder)
         if current_folder.parent_id is None:
@@ -172,15 +186,23 @@ async def get_folder_path(guid: str, session: SessionDep):
     return path
 
 @router.patch("/{guid}", response_model=FolderResponseMinimal)
-async def rename_folder(guid: str, folder_in: FolderRename, session: SessionDep):
-    result = await session.execute(select(Folder).where(Folder.guid == guid))
+async def rename_folder(
+    guid: str,
+    folder_in: FolderRename, 
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(Folder)
+        .options(selectinload(Folder.workspace))
+        .where(Folder.guid == guid)
+    )
     folder = result.scalar_one_or_none()
     if not folder:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Folder not found",
-        )
+        raise HTTPException(status_code=404, detail="Folder not found")
     
+    await check_workspace_access(folder.workspace, session_guid)
+
     folder.name = await _get_unique_folder_name(
         session, folder_in.name, folder.parent_id, folder.workspace_id, exclude_id=folder.id
     )
@@ -189,29 +211,44 @@ async def rename_folder(guid: str, folder_in: FolderRename, session: SessionDep)
     return folder
 
 @router.patch("/{guid}/favorite", response_model=FolderResponseMinimal)
-async def toggle_favorite(guid: str, favorite_in: FolderFavoriteToggle, session: SessionDep):
-    result = await session.execute(select(Folder).where(Folder.guid == guid))
+async def toggle_favorite(
+    guid: str,
+    favorite_in: FolderFavoriteToggle, 
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(Folder)
+        .options(selectinload(Folder.workspace))
+        .where(Folder.guid == guid)
+    )
     folder = result.scalar_one_or_none()
     if not folder:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Folder not found",
-        )
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    await check_workspace_access(folder.workspace, session_guid)
+
     folder.is_favorite = favorite_in.is_favorite
     await session.commit()
     await session.refresh(folder)
     return folder
 
 @router.delete("/{guid}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_folder(guid: str, session: SessionDep):
-    result = await session.execute(select(Folder).where(Folder.guid == guid))
+async def delete_folder(
+    guid: str,
+    session: SessionDep,
+    session_guid: SessionGuidDep
+):
+    result = await session.execute(
+        select(Folder)
+        .options(selectinload(Folder.workspace))
+        .where(Folder.guid == guid)
+    )
     folder = result.scalar_one_or_none()
-
     if not folder:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Folder not found",
-        )
+        raise HTTPException(status_code=404, detail="Folder not found")
+    
+    await check_workspace_access(folder.workspace, session_guid)
 
     async def process_folder_files(current_id: int):
         await session.execute(
