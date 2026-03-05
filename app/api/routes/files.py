@@ -2,7 +2,7 @@ import os
 import uuid
 import shutil
 from typing import List, Optional
-from fastapi import APIRouter, UploadFile, File as FastAPIFile, HTTPException, status, Form
+from fastapi import APIRouter, UploadFile, File as FastAPIFile, HTTPException, status, Form, Cookie
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -43,6 +43,7 @@ async def upload_files(
     files: List[UploadFile] = FastAPIFile(...),
     folder_guid: Optional[str] = Form(None),
     workspace_guid: Optional[str] = Form(None),
+    session_guid: Optional[str] = Cookie(None)
 ):
     from app.models.workspace import Workspace
     
@@ -54,11 +55,19 @@ async def upload_files(
             raise HTTPException(status_code=404, detail="Workspace not found")
         workspace_id = workspace.id
     else:
-        # Fallback to default
-        res = await session.execute(select(Workspace).limit(1))
+        # Resolve or create default workspace for this session
+        query = select(Workspace).where(Workspace.is_deleted == False)
+        if session_guid:
+            query = query.where(Workspace.session_guid == session_guid)
+        
+        res = await session.execute(query.limit(1))
         workspace = res.scalar_one_or_none()
+        
         if not workspace:
-            workspace = Workspace(name="Default Workspace")
+            workspace = Workspace(
+                name="Default Workspace",
+                session_guid=session_guid
+            )
             session.add(workspace)
             await session.flush()
         workspace_id = workspace.id

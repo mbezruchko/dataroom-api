@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Cookie
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -14,20 +14,25 @@ router = APIRouter(prefix="/search", tags=["search"])
 async def global_search(
     session: SessionDep, 
     query: str = Query(..., min_length=1, description="Search term for files and folders"),
-    workspace_guid: Optional[str] = None
+    workspace_guid: Optional[str] = None,
+    session_guid: Optional[str] = Cookie(None)
 ):
     search_term = f"%{query}%"
-    # Note: Folder does not have is_deleted field
+    from app.models.workspace import Workspace
+    
+    # Base queries
     folders_query = select(Folder).where(Folder.name.ilike(search_term))
     files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == False)
     
     if workspace_guid:
-        from app.models.workspace import Workspace
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
         if workspace:
             folders_query = folders_query.where(Folder.workspace_id == workspace.id)
             files_query = files_query.where(File.workspace_id == workspace.id)
+    elif session_guid:
+        folders_query = folders_query.join(Workspace).where(Workspace.session_guid == session_guid)
+        files_query = files_query.join(Workspace).where(Workspace.session_guid == session_guid)
 
     folders_result = await session.execute(folders_query)
     folders = folders_result.scalars().all()
@@ -39,8 +44,14 @@ async def global_search(
     )
 
 @router.get("/favorites", response_model=SearchResponse)
-async def get_favorites(session: SessionDep, workspace_guid: Optional[str] = None):
-    # Note: Folder does not have is_deleted field
+async def get_favorites(
+    session: SessionDep, 
+    workspace_guid: Optional[str] = None,
+    session_guid: Optional[str] = Cookie(None)
+):
+    from app.models.workspace import Workspace
+    
+    # Base queries
     folders_query = (
         select(Folder)
         .options(selectinload(Folder.files.and_(File.is_deleted == False)))
@@ -49,12 +60,14 @@ async def get_favorites(session: SessionDep, workspace_guid: Optional[str] = Non
     files_query = select(File).where(File.is_favorite == True, File.is_deleted == False)
 
     if workspace_guid:
-        from app.models.workspace import Workspace
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
         if workspace:
             folders_query = folders_query.where(Folder.workspace_id == workspace.id)
             files_query = files_query.where(File.workspace_id == workspace.id)
+    elif session_guid:
+        folders_query = folders_query.join(Workspace).where(Workspace.session_guid == session_guid)
+        files_query = files_query.join(Workspace).where(Workspace.session_guid == session_guid)
 
     folders_result = await session.execute(folders_query)
     folders = folders_result.scalars().all()
@@ -69,15 +82,21 @@ async def get_favorites(session: SessionDep, workspace_guid: Optional[str] = Non
     )
 
 @router.get("/trash", response_model=SearchResponse)
-async def get_trash(session: SessionDep, workspace_guid: Optional[str] = None):
+async def get_trash(
+    session: SessionDep, 
+    workspace_guid: Optional[str] = None,
+    session_guid: Optional[str] = Cookie(None)
+):
+    from app.models.workspace import Workspace
     files_query = select(File).where(File.is_deleted == True)
     
     if workspace_guid:
-        from app.models.workspace import Workspace
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
         if workspace:
             files_query = files_query.where(File.workspace_id == workspace.id)
+    elif session_guid:
+        files_query = files_query.join(Workspace).where(Workspace.session_guid == session_guid)
 
     files_result = await session.execute(files_query)
     files = files_result.scalars().all()

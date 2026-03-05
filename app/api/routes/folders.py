@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Cookie
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from app.api.dependencies import SessionDep
@@ -17,7 +17,11 @@ from app.schemas.folder import (
 router = APIRouter(prefix="/folders", tags=["folders"])
 
 @router.post("", response_model=FolderResponseMinimal, status_code=status.HTTP_201_CREATED)
-async def create_folder(folder_in: FolderCreate, session: SessionDep):
+async def create_folder(
+    folder_in: FolderCreate, 
+    session: SessionDep,
+    session_guid: Optional[str] = Cookie(None)
+):
     # Resolve Workspace
     from app.models.workspace import Workspace
     if folder_in.workspace_guid:
@@ -27,12 +31,19 @@ async def create_folder(folder_in: FolderCreate, session: SessionDep):
             raise HTTPException(status_code=404, detail="Workspace not found")
         workspace_id = workspace.id
     else:
-        # Default to first workspace for now if not provided
-        res = await session.execute(select(Workspace).limit(1))
+        # Resolve or create default workspace for this session
+        query = select(Workspace).where(Workspace.is_deleted == False)
+        if session_guid:
+            query = query.where(Workspace.session_guid == session_guid)
+        
+        res = await session.execute(query.limit(1))
         workspace = res.scalar_one_or_none()
+        
         if not workspace:
-            # Create a default one if none exists (fallback)
-            workspace = Workspace(name="Default Workspace")
+            workspace = Workspace(
+                name="Default Workspace",
+                session_guid=session_guid
+            )
             session.add(workspace)
             await session.flush()
         workspace_id = workspace.id
@@ -61,7 +72,11 @@ async def create_folder(folder_in: FolderCreate, session: SessionDep):
     return new_folder
 
 @router.get("", response_model=List[FolderResponseMinimal])
-async def list_root_folders(session: SessionDep, workspace_guid: Optional[str] = None):
+async def list_root_folders(
+    session: SessionDep, 
+    workspace_guid: Optional[str] = None,
+    session_guid: Optional[str] = Cookie(None)
+):
     # Ensure nested files for count are also filtered
     query = (
         select(Folder)
@@ -69,12 +84,14 @@ async def list_root_folders(session: SessionDep, workspace_guid: Optional[str] =
         .where(Folder.parent_id == None)
     )
     
+    from app.models.workspace import Workspace
     if workspace_guid:
-        from app.models.workspace import Workspace
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
         if workspace:
             query = query.where(Folder.workspace_id == workspace.id)
+    elif session_guid:
+        query = query.join(Workspace).where(Workspace.session_guid == session_guid)
 
     result = await session.execute(query)
     folders = result.scalars().all()

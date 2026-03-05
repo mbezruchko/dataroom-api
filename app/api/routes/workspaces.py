@@ -17,7 +17,20 @@ async def list_workspaces(
         query = query.where(Workspace.session_guid == session_guid)
     
     result = await session.execute(query)
-    return result.scalars().all()
+    workspaces = result.scalars().all()
+
+    # If no workspaces exist for this session, create a default one
+    if not workspaces and session_guid:
+        default_workspace = Workspace(
+            name="Default Workspace",
+            session_guid=session_guid
+        )
+        session.add(default_workspace)
+        await session.commit()
+        await session.refresh(default_workspace)
+        return [default_workspace]
+        
+    return workspaces
 
 @router.post("", response_model=WorkspaceResponse, status_code=status.HTTP_201_CREATED)
 async def create_workspace(
