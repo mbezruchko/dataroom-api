@@ -21,7 +21,11 @@ async def global_search(
 ):
     search_term = f"%{query}%"
     
-    folders_query = select(Folder).where(Folder.name.ilike(search_term))
+    folders_query = (
+        select(Folder)
+        .options(selectinload(Folder.files.and_(File.is_deleted == False)))
+        .where(Folder.name.ilike(search_term))
+    )
     files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == False)
     deleted_files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == True)
     
@@ -43,6 +47,8 @@ async def global_search(
 
     folders_result = await session.execute(folders_query)
     folders = folders_result.scalars().all()
+    for f in folders:
+        f.files_count = len(f.files)
     
     files_result = await session.execute(files_query)
     files = files_result.scalars().all()
@@ -118,6 +124,7 @@ async def get_trash(
     return SearchResponse(
         folders=[],
         files=files,
+        deleted_files=[]
     )
 
 @router.delete("/trash/empty", status_code=204)
