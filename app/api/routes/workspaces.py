@@ -19,7 +19,6 @@ async def list_workspaces(
     result = await session.execute(query)
     workspaces = result.scalars().all()
 
-    # If no workspaces exist for this session, create a default one
     if not workspaces and session_guid:
         default_workspace = Workspace(
             name="Default Workspace",
@@ -38,7 +37,6 @@ async def create_workspace(
     session: SessionDep,
     session_guid: Optional[str] = Cookie(None)
 ):
-    # Use session_guid from body if provided, otherwise from cookie
     final_session_guid = workspace_in.session_guid or session_guid
     
     new_workspace = Workspace(

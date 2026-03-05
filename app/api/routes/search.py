@@ -20,7 +20,6 @@ async def global_search(
     search_term = f"%{query}%"
     from app.models.workspace import Workspace
     
-    # Base queries
     folders_query = select(Folder).where(Folder.name.ilike(search_term))
     files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == False)
     
@@ -51,7 +50,6 @@ async def get_favorites(
 ):
     from app.models.workspace import Workspace
     
-    # Base queries
     folders_query = (
         select(Folder)
         .options(selectinload(Folder.files.and_(File.is_deleted == False)))

@@ -11,6 +11,8 @@ from app.models.file import File
 from app.models.folder import Folder
 from app.schemas.file import FileResponse, FileUpdate, FileFavoriteToggle
 from app.core.config import settings
+from app.models.workspace import Workspace
+from fastapi.responses import FileResponse as FastAPIFileResponse
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -23,7 +25,6 @@ async def list_files(
     query = select(File).where(File.is_deleted == False)
     
     if workspace_guid:
-        from app.models.workspace import Workspace
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
         if workspace:
@@ -44,10 +45,7 @@ async def upload_files(
     folder_guid: Optional[str] = Form(None),
     workspace_guid: Optional[str] = Form(None),
     session_guid: Optional[str] = Cookie(None)
-):
-    from app.models.workspace import Workspace
-    
-    # Resolve Workspace
+):  
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
@@ -55,7 +53,6 @@ async def upload_files(
             raise HTTPException(status_code=404, detail="Workspace not found")
         workspace_id = workspace.id
     else:
-        # Resolve or create default workspace for this session
         query = select(Workspace).where(Workspace.is_deleted == False)
         if session_guid:
             query = query.where(Workspace.session_guid == session_guid)
@@ -72,7 +69,6 @@ async def upload_files(
             await session.flush()
         workspace_id = workspace.id
 
-    # Resolve Folder
     folder_id = None
     if folder_guid:
         res = await session.execute(select(Folder).where(Folder.guid == folder_guid))
@@ -83,7 +79,6 @@ async def upload_files(
 
     uploaded_files = []
     
-    # Ensure storage path exists
     os.makedirs(settings.STORAGE_PATH, exist_ok=True)
 
     for file in files:
@@ -119,8 +114,6 @@ async def download_file(guid: str, session: SessionDep):
     
     if not file or not os.path.exists(file.storage_path):
         raise HTTPException(status_code=404, detail="File not found")
-
-    from fastapi.responses import FileResponse as FastAPIFileResponse
     
     return FastAPIFileResponse(
         path=file.storage_path,

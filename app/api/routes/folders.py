@@ -5,6 +5,7 @@ from sqlalchemy.orm import selectinload
 from app.api.dependencies import SessionDep
 from app.models.folder import Folder
 from app.models.file import File
+from app.models.workspace import Workspace
 from app.schemas.folder import (
     FolderCreate,
     FolderRename,
@@ -51,8 +52,6 @@ async def create_folder(
     session: SessionDep,
     session_guid: Optional[str] = Cookie(None)
 ):
-    # Resolve Workspace
-    from app.models.workspace import Workspace
     if folder_in.workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == folder_in.workspace_guid))
         workspace = res.scalar_one_or_none()
@@ -60,7 +59,6 @@ async def create_folder(
             raise HTTPException(status_code=404, detail="Workspace not found")
         workspace_id = workspace.id
     else:
-        # Resolve or create default workspace for this session
         query = select(Workspace).where(Workspace.is_deleted == False)
         if session_guid:
             query = query.where(Workspace.session_guid == session_guid)
@@ -108,14 +106,12 @@ async def list_root_folders(
     workspace_guid: Optional[str] = None,
     session_guid: Optional[str] = Cookie(None)
 ):
-    # Ensure nested files for count are also filtered
     query = (
         select(Folder)
         .options(selectinload(Folder.files.and_(File.is_deleted == False)))
         .where(Folder.parent_id == None)
     )
     
-    from app.models.workspace import Workspace
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
