@@ -90,7 +90,6 @@ async def upload_files(
             guid=file_guid,
             name=file.filename,
             size=os.path.getsize(storage_path),
-            mime_type=file.content_type,
             storage_path=storage_path,
             folder_id=folder_id,
             workspace_id=workspace_id
@@ -113,10 +112,11 @@ async def download_file(guid: str, session: SessionDep):
         raise HTTPException(status_code=404, detail="File not found")
 
     from fastapi.responses import FileResponse as FastAPIFileResponse
+    
     return FastAPIFileResponse(
         path=file.storage_path,
         filename=file.name,
-        media_type=file.mime_type
+        media_type="application/pdf"
     )
 
 @router.patch("/{guid}", response_model=FileResponse)
