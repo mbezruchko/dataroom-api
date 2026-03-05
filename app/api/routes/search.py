@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 from sqlalchemy import select
@@ -118,3 +119,41 @@ async def get_trash(
         folders=[],
         files=files,
     )
+
+@router.delete("/trash/empty", status_code=204)
+async def empty_trash(
+    session: SessionDep, 
+    session_guid: SessionGuidDep,
+    workspace_guid: str
+):
+    # Find workspace
+    res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
+    workspace = res.scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+        
+    await check_workspace_access(workspace, session_guid)
+    
+    # Find all deleted files
+    files_res = await session.execute(
+        select(File).where(File.workspace_id == workspace.id, File.is_deleted == True)
+    )
+    files_to_delete = files_res.scalars().all()
+    
+    if not files_to_delete:
+        return
+
+    # Delete physical files and records
+    for file in files_to_delete:
+        storage_path = file.storage_path
+        await session.delete(file)
+        
+        # Best effort physical deletion
+        if storage_path and os.path.exists(storage_path):
+            try:
+                os.remove(storage_path)
+            except OSError as e:
+                print(f"Error deleting physical file {storage_path}: {e}")
+
+    await session.commit()
+    return
