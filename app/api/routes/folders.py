@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, status, Cookie
+from fastapi import APIRouter, HTTPException, status, Header
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from app.api.dependencies import SessionDep
@@ -50,7 +50,7 @@ async def _get_unique_folder_name(
 async def create_folder(
     folder_in: FolderCreate, 
     session: SessionDep,
-    session_guid: Optional[str] = Cookie(None)
+    session_guid: Optional[str] = Header(None, alias="session-guid")
 ):
     if folder_in.workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == folder_in.workspace_guid))
@@ -104,7 +104,7 @@ async def create_folder(
 async def list_root_folders(
     session: SessionDep, 
     workspace_guid: Optional[str] = None,
-    session_guid: Optional[str] = Cookie(None)
+    session_guid: Optional[str] = Header(None, alias="session-guid")
 ):
     query = (
         select(Folder)

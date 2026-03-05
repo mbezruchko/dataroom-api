@@ -2,7 +2,7 @@ import os
 import uuid
 import shutil
 from typing import List, Optional
-from fastapi import APIRouter, UploadFile, File as FastAPIFile, HTTPException, status, Form, Cookie
+from fastapi import APIRouter, UploadFile, File as FastAPIFile, HTTPException, status, Form, Header
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -44,7 +44,7 @@ async def upload_files(
     files: List[UploadFile] = FastAPIFile(...),
     folder_guid: Optional[str] = Form(None),
     workspace_guid: Optional[str] = Form(None),
-    session_guid: Optional[str] = Cookie(None)
+    session_guid: Optional[str] = Header(None, alias="session-guid")
 ):  
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))

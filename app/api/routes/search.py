@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Query, Cookie
+from fastapi import APIRouter, Query, Header
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -15,7 +15,7 @@ async def global_search(
     session: SessionDep, 
     query: str = Query(..., min_length=1, description="Search term for files and folders"),
     workspace_guid: Optional[str] = None,
-    session_guid: Optional[str] = Cookie(None)
+    session_guid: Optional[str] = Header(None, alias="session-guid")
 ):
     search_term = f"%{query}%"
     from app.models.workspace import Workspace
@@ -55,7 +55,7 @@ async def global_search(
 async def get_favorites(
     session: SessionDep, 
     workspace_guid: Optional[str] = None,
-    session_guid: Optional[str] = Cookie(None)
+    session_guid: Optional[str] = Header(None, alias="session-guid")
 ):
     from app.models.workspace import Workspace
     
@@ -92,7 +92,7 @@ async def get_favorites(
 async def get_trash(
     session: SessionDep, 
     workspace_guid: Optional[str] = None,
-    session_guid: Optional[str] = Cookie(None)
+    session_guid: Optional[str] = Header(None, alias="session-guid")
 ):
     from app.models.workspace import Workspace
     files_query = select(File).where(File.is_deleted == True)
