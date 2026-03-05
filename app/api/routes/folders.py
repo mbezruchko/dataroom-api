@@ -167,7 +167,6 @@ async def delete_folder(guid: str, session: SessionDep):
         )
 
     async def process_folder_files(current_id: int):
-        # We mark files as deleted and move them to "no folder" (root trash)
         await session.execute(
             update(File)
             .where(File.folder_id == current_id)
@@ -179,7 +178,6 @@ async def delete_folder(guid: str, session: SessionDep):
             await process_folder_files(child.id)
             
     await process_folder_files(folder.id)
-    # Folders are still hard-deleted as requested (they don't have is_deleted)
     await session.delete(folder)
     await session.commit()
     return

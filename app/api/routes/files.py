@@ -154,6 +154,27 @@ async def delete_file(guid: str, session: SessionDep):
     await session.commit()
     return
 
+@router.delete("/{guid}/permanent", status_code=status.HTTP_204_NO_CONTENT)
+async def permanent_delete_file(guid: str, session: SessionDep):
+    result = await session.execute(select(File).where(File.guid == guid))
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    storage_path = file.storage_path
+    await session.delete(file)
+    await session.commit()
+
+    if os.path.exists(storage_path):
+        try:
+            os.remove(storage_path)
+        except OSError as e:
+            print(f"Error deleting physical file {storage_path}: {e}")
+    else:
+        print(f"Physical file not found at {storage_path}, but DB entry was deleted.")
+
+    return
+
 @router.post("/{guid}/restore", response_model=FileResponse)
 async def restore_file(guid: str, session: SessionDep):
     result = await session.execute(select(File).where(File.guid == guid))

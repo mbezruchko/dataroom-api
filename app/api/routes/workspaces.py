@@ -1,5 +1,5 @@
-from typing import List
-from fastapi import APIRouter, status
+from typing import List, Optional
+from fastapi import APIRouter, status, Cookie
 from sqlalchemy import select
 from app.api.dependencies import SessionDep
 from app.models.workspace import Workspace
@@ -8,17 +8,30 @@ from app.schemas.workspace import WorkspaceResponse, WorkspaceCreate
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 @router.get("", response_model=List[WorkspaceResponse])
-async def list_workspaces(session: SessionDep):
-    result = await session.execute(
-        select(Workspace).where(Workspace.is_deleted == False)
-    )
+async def list_workspaces(
+    session: SessionDep, 
+    session_guid: Optional[str] = Cookie(None)
+):
+    query = select(Workspace).where(Workspace.is_deleted == False)
+    if session_guid:
+        query = query.where(Workspace.session_guid == session_guid)
+    
+    result = await session.execute(query)
     return result.scalars().all()
 
 @router.post("", response_model=WorkspaceResponse, status_code=status.HTTP_201_CREATED)
-async def create_workspace(workspace_in: WorkspaceCreate, session: SessionDep):
+async def create_workspace(
+    workspace_in: WorkspaceCreate, 
+    session: SessionDep,
+    session_guid: Optional[str] = Cookie(None)
+):
+    # Use session_guid from body if provided, otherwise from cookie
+    final_session_guid = workspace_in.session_guid or session_guid
+    
     new_workspace = Workspace(
         name=workspace_in.name,
-        description=workspace_in.description
+        description=workspace_in.description,
+        session_guid=final_session_guid
     )
     session.add(new_workspace)
     await session.commit()
