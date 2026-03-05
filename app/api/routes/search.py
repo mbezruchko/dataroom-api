@@ -22,6 +22,7 @@ async def global_search(
     
     folders_query = select(Folder).where(Folder.name.ilike(search_term))
     files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == False)
+    deleted_files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == True)
     
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
@@ -29,17 +30,25 @@ async def global_search(
         if workspace:
             folders_query = folders_query.where(Folder.workspace_id == workspace.id)
             files_query = files_query.where(File.workspace_id == workspace.id)
+            deleted_files_query = deleted_files_query.where(File.workspace_id == workspace.id)
     elif session_guid:
         folders_query = folders_query.join(Workspace).where(Workspace.session_guid == session_guid)
         files_query = files_query.join(Workspace).where(Workspace.session_guid == session_guid)
+        deleted_files_query = deleted_files_query.join(Workspace).where(Workspace.session_guid == session_guid)
 
     folders_result = await session.execute(folders_query)
     folders = folders_result.scalars().all()
+    
     files_result = await session.execute(files_query)
     files = files_result.scalars().all()
+    
+    deleted_files_result = await session.execute(deleted_files_query)
+    deleted_files = deleted_files_result.scalars().all()
+
     return SearchResponse(
         folders=folders,
         files=files,
+        deleted_files=deleted_files
     )
 
 @router.get("/favorites", response_model=SearchResponse)

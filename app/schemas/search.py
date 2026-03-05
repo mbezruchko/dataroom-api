@@ -7,5 +7,6 @@ from app.schemas.file import FileResponse
 class SearchResponse(BaseModel):
     folders: List[FolderResponseMinimal]
     files: List[FileResponse]
+    deleted_files: List[FileResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

@@ -1,7 +1,9 @@
+import os
 from typing import List, Optional
 from fastapi import APIRouter, status, Cookie, HTTPException
 from sqlalchemy import select
 from app.api.dependencies import SessionDep
+from app.models.file import File
 from app.models.workspace import Workspace
 from app.schemas.workspace import WorkspaceResponse, WorkspaceCreate, WorkspaceUpdate
 
@@ -84,10 +86,6 @@ async def delete_workspace(guid: str, session: SessionDep):
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     
-    # Optionally delete physical files from disk
-    from app.models.file import File
-    import os
-    
     file_paths_res = await session.execute(select(File.storage_path).where(File.workspace_id == workspace.id))
     file_paths = file_paths_res.scalars().all()
     
@@ -96,7 +94,7 @@ async def delete_workspace(guid: str, session: SessionDep):
             if os.path.exists(path):
                 os.remove(path)
         except Exception:
-            pass # Best effort deletion
+            pass
 
     await session.delete(workspace)
     await session.commit()
