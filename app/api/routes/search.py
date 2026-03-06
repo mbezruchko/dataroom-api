@@ -17,14 +17,29 @@ async def global_search(
     session: SessionDep, 
     session_guid: SessionGuidDep,
     query: str = Query(..., min_length=1, description="Search term for files and folders"),
-    workspace_guid: Optional[str] = None
+    workspace_guid: Optional[str] = None,
+    folder_guid: Optional[str] = None
 ):
     search_term = f"%{query}%"
     
-    folders_query = select(Folder).where(Folder.name.ilike(search_term))
+    folders_query = (
+        select(Folder)
+        .options(selectinload(Folder.files.and_(File.is_deleted == False)))
+        .where(Folder.name.ilike(search_term))
+    )
     files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == False)
     deleted_files_query = select(File).where(File.name.ilike(search_term), File.is_deleted == True)
     
+    if folder_guid:
+        # If searching in specific folder, we first find the folder id
+        folder_res = await session.execute(select(Folder).where(Folder.guid == folder_guid))
+        target_folder = folder_res.scalar_one_or_none()
+        if target_folder:
+            # Filter by parent_id for folders and folder_id for files
+            folders_query = folders_query.where(Folder.parent_id == target_folder.id)
+            files_query = files_query.where(File.folder_id == target_folder.id)
+            deleted_files_query = deleted_files_query.where(File.folder_id == target_folder.id)
+
     if workspace_guid:
         res = await session.execute(select(Workspace).where(Workspace.guid == workspace_guid))
         workspace = res.scalar_one_or_none()
@@ -43,6 +58,8 @@ async def global_search(
 
     folders_result = await session.execute(folders_query)
     folders = folders_result.scalars().all()
+    for f in folders:
+        f.files_count = len(f.files)
     
     files_result = await session.execute(files_query)
     files = files_result.scalars().all()
@@ -118,6 +135,7 @@ async def get_trash(
     return SearchResponse(
         folders=[],
         files=files,
+        deleted_files=[]
     )
 
 @router.delete("/trash/empty", status_code=204)
